@@ -18,13 +18,26 @@ package mon
 
 import (
 	"github.com/pkg/errors"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	v1 "k8s.io/api/core/v1"
 )
 
-func getNodeInfoFromNode(n v1.Node) (*MonScheduleInfo, error) {
-	nr := &MonScheduleInfo{
+const (
+	monIPAnnotation = "network.rook.io/mon-ip"
+)
+
+func getNodeInfoFromNode(n v1.Node) (*opcontroller.MonScheduleInfo, error) {
+	nr := &opcontroller.MonScheduleInfo{
 		Name:     n.Name,
 		Hostname: n.Labels[v1.LabelHostname],
+	}
+
+	// If the host networking is setup such that a different IP should be used
+	// than the one that is to the K8s node.
+	if customIP, ok := n.Annotations[monIPAnnotation]; ok {
+		logger.Infof("found %s annotation on node %q --> %q", monIPAnnotation, n.Name, customIP)
+		nr.Address = customIP
+		return nr, nil
 	}
 
 	for _, ip := range n.Status.Addresses {
@@ -34,8 +47,20 @@ func getNodeInfoFromNode(n v1.Node) (*MonScheduleInfo, error) {
 			break
 		}
 	}
+
+	// If no internal IP found try to use an external IP
 	if nr.Address == "" {
-		return nil, errors.Errorf("failed to find any internal IP on node %s", nr.Name)
+		for _, ip := range n.Status.Addresses {
+			if ip.Type == v1.NodeExternalIP {
+				logger.Debugf("using external IP %s for node %s", ip.Address, n.Name)
+				nr.Address = ip.Address
+				break
+			}
+		}
+	}
+
+	if nr.Address == "" {
+		return nil, errors.Errorf("failed to find any IP on node %s", nr.Name)
 	}
 	return nr, nil
 }
